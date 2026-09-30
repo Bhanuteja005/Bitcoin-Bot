@@ -11,7 +11,7 @@ RUN uv sync --locked --no-dev
 # Journal, scans and the kill switch live on a Railway volume mounted at /data.
 ENV PATH="/app/.venv/bin:$PATH" PM_DATA_DIR=/data
 
-# `pm doctor` first so the deploy log shows connectivity and the geoblock verdict.
-# Stake is PM_MAX_STAKE_USD, stop is PM_STOP_LOSS_PCT; --forever pauses on daily limits
-# and exits only when cash runs out, the kill switch is on, or geoblock fails.
-CMD ["sh", "-c", "pm doctor; exec pm auto --strategy favourite --enter-at 120 --hold --fixed --forever"]
+# The dashboard is the web process (Railway's PORT, behind PM_DASHBOARD_PASSWORD). Its Start
+# button runs Bot B: `pm auto --strategy favourite --enter-at 120 --hold --fixed --forever`,
+# stake PM_MAX_STAKE_USD, stop PM_STOP_LOSS_PCT. `pm doctor` first shows the geoblock verdict.
+CMD ["sh", "-c", "pm doctor; exec pm dashboard"]

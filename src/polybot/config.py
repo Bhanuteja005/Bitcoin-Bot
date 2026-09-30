@@ -120,6 +120,10 @@ class Settings:
     geoblock_url: str = "https://polymarket.com/api/geoblock"
     binance_host: str = "https://api.binance.com"
     data_dir: Path = ROOT / "data"
+    # `pm dashboard`: web page with Start/Stop. Without a password it only listens on
+    # 127.0.0.1; with one it listens on every interface (Railway) behind HTTP basic auth.
+    dashboard_password: str = field(default="", repr=False)
+    port: int = 8080
     risk: Risk = field(default_factory=Risk)
     calibration: Calibration = field(default_factory=Calibration)
 
@@ -187,6 +191,8 @@ def load(env_file: Path | None = None) -> Settings:
         data_host=get("DATA_HOST", d.data_host),
         binance_host=get("BINANCE_HOST", d.binance_host),
         data_dir=data_dir,
+        dashboard_password=get("DASHBOARD_PASSWORD"),
+        port=int(env.get("PORT", "").strip() or 8080),  # Railway sets PORT
         risk=risk,
         calibration=Calibration() if get("CALIBRATION").lower() == "off" else load_calibration(data_dir),
     )

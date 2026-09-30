@@ -673,6 +673,12 @@ def cmd_auto(s: Settings, a) -> int:
     return 0
 
 
+def cmd_dashboard(s: Settings, a) -> int:
+    from . import dashboard
+
+    return dashboard.serve(s)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pm", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -721,6 +727,7 @@ def main(argv: list[str] | None = None) -> int:
                         "stops only when cash runs out, the kill switch is on, or geoblock fails")
     p.add_argument("--log-every", type=float, default=10.0)
 
+    sub.add_parser("dashboard", help="web page: start/stop Bot B, trades, charts, log (PORT, PM_DASHBOARD_PASSWORD)")
     sub.add_parser("status")
     p = sub.add_parser("pnl")
     p.add_argument("-n", type=int, default=20)

@@ -25,3 +25,19 @@ def test_report_pnl_exits_and_calibration():
     assert r["tp_n"] == 1 and r["tp_saved"] == pytest.approx(11.25 - 12.5)  # holding would have paid $12.50
     assert r["brier_model"] == pytest.approx(((0.6 - 1) ** 2 + 0.6**2 + (0.9 - 1) ** 2) / 3)
     assert r["buckets"] == {"0.6-0.7": [2, 1], "0.9-1.0": [1, 1]}
+
+
+def test_dashboard_trades_and_stats():
+    from polybot.dashboard import stats, trades
+    rows = [
+        _row("entry", "a", "Up", 2, 1.0, 0.5),
+        _row("settle", "a", "Up", 2, 2.0, 1.0),  # held, won: +1
+        _row("entry", "b", "Down", 1.25, 1.0, 0.8),
+        _row("exit", "b", "Down", 1.25, 0.6, 0.48, reason="stop-loss"),  # stopped: -0.4
+        _row("entry", "c", "Up", 1.0, 0.9, 0.9),  # still open
+    ]
+    ts = trades(rows, "paper")
+    assert [t["result"] for t in ts] == ["won", "stopped", "open"]
+    s = stats(ts, 0)
+    assert s["trades"] == 2 and s["wins"] == 1 and s["open"] == 1
+    assert s["pnl"] == pytest.approx(0.6) and s["max_drawdown"] == pytest.approx(0.4)

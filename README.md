@@ -52,11 +52,17 @@ when the bid pays more than fair value, otherwise hold to resolution.
 
 ## Bot B on Railway
 
-`Dockerfile` runs Bot B: buy the favourite (0.60-0.95) with 2 minutes left, $`PM_MAX_STAKE_USD`
-fixed, sell if the bid falls `PM_STOP_LOSS_PCT` below entry, otherwise hold to the result.
-`--forever` pauses on the daily limits and exits only when cash runs out, the kill switch is
-on (`/data/KILL`), or geoblock fails. Add a volume at `/data`; set the variables in Railway
-(paper unless `PM_MODE=live` and `PM_LIVE_CONFIRMED=true`).
+The container runs `pm dashboard`: a password-protected page with **Start / Stop**, the
+equity curve, P&L per trade, win rate by entry price, how trades ended, the trade history
+and the bot's live log. Start runs Bot B: buy the favourite (0.60-0.95) with 2 minutes left,
+fixed stake `PM_MAX_STAKE_USD`, sell if the bid falls `PM_STOP_LOSS_PCT` below entry,
+otherwise hold to the result. It pauses on the daily limits and stops by itself only when
+cash runs out, the kill switch is on (`/data/KILL`), or geoblock fails. A running bot is
+restarted after a redeploy; a stopped one stays stopped.
+
+Railway: add a volume at `/data`, set `PM_DASHBOARD_PASSWORD` and the variables below, open
+the generated domain (any username, that password). Paper unless `PM_MODE=live` and
+`PM_LIVE_CONFIRMED=true`. Locally: `uv run pm dashboard` -> http://127.0.0.1:8080.
 
 ## Going live (checklist)
 
