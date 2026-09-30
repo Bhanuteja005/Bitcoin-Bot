@@ -386,7 +386,8 @@ def serve(s: Settings) -> int:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, on_term)
     srv = ThreadingHTTPServer((host, s.port), make_handler(app))
-    print(f"dashboard on http://{host}:{s.port}  [{'LIVE' if s.is_live else 'PAPER'}]", flush=True)
+    print(f"dashboard: open http://127.0.0.1:{s.port} in your browser  [{'LIVE' if s.is_live else 'PAPER'}]"
+          + ("  (login: any username + PM_DASHBOARD_PASSWORD)" if s.dashboard_password else ""), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
