@@ -61,7 +61,7 @@ def geoblock_ok(s: Settings) -> tuple[bool | None, str]:
     return ok, detail
 
 
-def settle_positions(s: Settings) -> list[str]:
+def settle_positions(s: Settings, redeem: bool = True) -> list[str]:
     """Book the result of positions whose window has ended.
 
     Paper settles from the resolved Polymarket market, else from Binance (flagged
@@ -115,7 +115,7 @@ def settle_positions(s: Settings) -> list[str]:
                        detail=f"winner {winner} via {source}")
         notes.append(f"settled {slug} {outcome}: {'WON' if payout else 'LOST'} "
                      f"${pos.shares * payout - pos.cost:+.2f} (winner {winner}, {source})")
-        if mode == "live" and payout and s.is_live:
+        if redeem and mode == "live" and payout and s.is_live:
             # Winning shares only turn back into cash once redeemed on-chain; without
             # this the next trade finds no cash and the risk gate refuses it.
             try:
@@ -654,6 +654,33 @@ def _on_stop(_signum, _frame) -> None:
     _p("stop requested: no new trades; an open position is managed until its window closes")
 
 
+class _Claimer:
+    """Claims winnings in a background thread. A claim waits up to ~200s for the relayer;
+    run inline it would make the autopilot miss the next window's entry."""
+
+    def __init__(self, s: Settings):
+        self.s = s
+        self.failed: dict[str, float] = {}
+        self.thread: threading.Thread | None = None
+
+    def pending(self) -> bool:
+        """Winnings may still be on their way to cash: a claim is running or will be retried."""
+        return bool(self.thread and self.thread.is_alive()) or bool(self.failed)
+
+    def kick(self) -> None:
+        if not self.s.is_live or (self.thread and self.thread.is_alive()):
+            return
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            for n in Broker(self.s).claim_all(self.failed):  # own client: not shared with orders
+                _p(n)
+        except Exception as e:  # noqa: BLE001 - a failed claim never stops trading
+            _p(f"claim check failed: {e!s:.100}")
+
+
 def _prune_briefs(s: Settings) -> None:
     """Saved scans pile up (~15k files a day); keep the last `keep_briefs_days`."""
     if s.risk.keep_briefs_days <= 0:
@@ -693,18 +720,15 @@ def _auto_loop(s: Settings, a) -> int:
     _p(f"autopilot [{label}] {sizing}, entries in the last {s.risk.entry_zone_s}s of each window, "
        f"min edge {s.risk.min_edge:.2f}. Ctrl-C to stop.")
     done = 0
+    claimer = _Claimer(s)
     try:
         while a.rounds == 0 or done < a.rounds:
             try:
-                for n in settle_positions(s):
+                for n in settle_positions(s, redeem=False):
                     _p(n)
             except Exception as e:  # noqa: BLE001 - settlement is retried every window
                 _p(f"settlement check failed, retrying next window: {e!s:.120}")
-            try:
-                for n in broker.claim_all():
-                    _p(n)
-            except Exception as e:  # noqa: BLE001 - a failed claim never stops trading
-                _p(f"claim check failed: {e!s:.100}")
+            claimer.kick()
             w = window_at(time.time())
             if w.seconds_left(time.time()) <= s.risk.min_seconds_left:
                 w = next_window(time.time())
@@ -724,7 +748,8 @@ def _auto_loop(s: Settings, a) -> int:
                 s = _relearn(s)
             if result.startswith("stop:"):
                 reason = result[5:]
-                if a.forever and not any(k in reason for k in FINAL):
+                claiming = "available cash" in reason and claimer.pending()
+                if a.forever and (claiming or not any(k in reason for k in FINAL)):
                     # A daily limit resets at 00:00 UTC; wait it out instead of exiting.
                     _p(f"autopilot paused: {reason} - checking again next window")
                     _nap(max(0.0, w.end - time.time()) + 1.0)
@@ -735,7 +760,7 @@ def _auto_loop(s: Settings, a) -> int:
     except KeyboardInterrupt:
         _p("autopilot stopped by user.")
     time.sleep(3)
-    for n in settle_positions(s):
+    for n in settle_positions(s, redeem=False):  # winnings are claimed on the next start
         _p(n)
     book = journal.replay(journal.rows(s.data_dir))
     _p(f"today realised ${book.realised_by_day.get(journal.today(), 0.0):+.2f}")

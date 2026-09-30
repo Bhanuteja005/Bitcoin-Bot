@@ -117,3 +117,49 @@ def test_dashboard_restarts_crashes_but_not_deliberate_exits(tmp_path):
     assert not bot.running() and bot.wanted() and bot.crashes == 1 and bot.crashed_at
     bot.proc = _Proc(0)  # ran out of cash
     assert not bot.running() and not bot.wanted()
+
+
+class _Pos:
+    def __init__(self, cid):
+        self.condition_id, self.redeemable, self.slug, self.outcome, self.current_size = cid, True, "s-" + cid, "Up", 1
+
+
+def test_failed_claim_waits_an_hour_before_retrying(tmp_path, monkeypatch):
+    s = Settings(mode="live", live_confirmed=True, data_dir=tmp_path, private_key="k", funder="f",
+                 builder_key=("a", "b", "c"))
+    b = Broker(s)
+    fake = type("C", (), {"list_positions": lambda self, **_: [_Pos("c1"), _Pos("c2")]})()
+    monkeypatch.setattr(b, "clob", lambda: fake)
+    tried = []
+
+    def redeem(cid):
+        tried.append(cid)
+        if cid == "c1":
+            raise RuntimeError("relayer timeout")
+        return "ok"
+    monkeypatch.setattr(b, "redeem", redeem)
+    failed = {}
+    b.claim_all(failed)
+    assert tried == ["c1", "c2"] and set(failed) == {"c1"}
+    b.claim_all(failed)  # c1 is cooling down; c2 is claimed again only if still redeemable
+    assert tried.count("c1") == 1
+
+
+def test_autopilot_does_not_wait_for_claims(desk, monkeypatch):  # noqa: F811
+    s, _, _ = desk
+    kicked = []
+    monkeypatch.setattr(cli._Claimer, "kick", lambda self: kicked.append(1))
+    monkeypatch.setattr(Broker, "claim_all", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("inline claim")))
+    assert cli.main(["auto", "--rounds", "1"]) == 0
+    assert kicked
+
+
+def test_low_cash_while_claiming_pauses_instead_of_stopping(desk, capsys, monkeypatch):  # noqa: F811
+    s, state, _ = desk
+    s = dataclasses.replace(s, risk=dataclasses.replace(s.risk, bankroll_usd=0.5))
+    monkeypatch.setattr(cli, "load", lambda: s)
+    state.update(spot=100_400.0, up_ask=0.88, down_ask=0.14)
+    monkeypatch.setattr(cli._Claimer, "pending", lambda self: True)
+    assert cli.main(["auto", "--rounds", "2", "--forever", "--fixed", "--usd", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "autopilot paused: stake $1.00 exceeds available cash" in out and "autopilot stopping" not in out

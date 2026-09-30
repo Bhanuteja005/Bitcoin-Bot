@@ -106,12 +106,18 @@ class Broker:
         handle = self.clob().redeem_positions(condition_id=condition_id)
         return str(handle.wait())
 
-    def claim_all(self) -> list[str]:
+    def claim_all(self, failed: dict[str, float] | None = None, retry_s: float = 3600) -> list[str]:
         """Redeem every resolved position the wallet holds, so winnings are cash again
-        before the next trade. Gasless redeems need the builder key from .env."""
+        before the next trade. Gasless redeems need the builder key from .env.
+
+        `failed` (condition id -> time of the last failure) is updated in place; a claim
+        that failed is not retried for `retry_s`, since each attempt can wait ~200s."""
         if not self.s.is_live or not self.s.has_wallet:
             return []
-        todo = {str(p.condition_id): p for p in items(self.clob().list_positions()) if p.redeemable}
+        failed = {} if failed is None else failed
+        now = time.time()
+        todo = {str(p.condition_id): p for p in items(self.clob().list_positions())
+                if p.redeemable and now - failed.get(str(p.condition_id), 0.0) >= retry_s}
         if todo and not self.s.builder_key:
             return [f"{len(todo)} position(s) to claim, but PM_BUILDER_API_KEY/_SECRET/_PASSPHRASE "
                     "are not in .env - claim in the Polymarket UI"]
@@ -119,8 +125,10 @@ class Broker:
         for cid, p in todo.items():
             try:
                 notes.append(f"claimed {p.slug} {p.outcome} {float(p.current_size):.3f}sh: {self.redeem(cid)}")
+                failed.pop(cid, None)
             except Exception as e:  # noqa: BLE001 - one failed claim must not stop the rest
-                notes.append(f"claim {p.slug} failed ({e!s:.120}) - claim it in the Polymarket UI")
+                failed[cid] = time.time()
+                notes.append(f"claim {p.slug} failed ({e!s:.120}) - retrying in 1h, or claim it in the Polymarket UI")
         return notes
 
     def prefetch(self, m: Market) -> None:
