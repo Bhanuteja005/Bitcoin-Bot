@@ -177,11 +177,12 @@ class Broker:
             # fewer than the order reported. A FOK sell for more than is held is refused
             # outright, so sell what the chain says we have.
             try:
-                held = self.token_balance(m.token(outcome))
-                if held < shares:
-                    shares = math.floor(held * 100) / 100
+                shares = min(shares, self.token_balance(m.token(outcome)))
             except Exception:  # noqa: BLE001 - fall back to the journal's count
                 pass
+            # Orders are sized in 0.01-share lots: a 4-decimal size was rejected live as
+            # "invalid maker amount". The < 0.01 remainder is dust the bot ignores.
+            shares = math.floor(shares * 100 + 1e-9) / 100
             if shares <= 0:
                 fill = Fill(False, "live", "SELL", outcome, 0, 0, 0, "", "no shares held on-chain")
             else:

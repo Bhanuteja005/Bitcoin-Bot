@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import signal
 import sys
+import threading
 import time
 
 from . import brief as briefmod
@@ -28,6 +30,9 @@ from .risk import EntryState, check_entry, check_exit
 from .window import in_blackout, next_window, parse_slug, window_at
 
 GEOBLOCK_TTL_S = 600
+# Set by Ctrl-C / SIGINT (the dashboard's Stop): no new entries, an open position is still
+# managed to its close, then the autopilot exits. A second Ctrl-C stops at once.
+STOP = threading.Event()
 
 
 DUST_SHARES = 0.01
@@ -488,7 +493,7 @@ def cmd_doctor(s: Settings, a) -> int:
 # ---------------------------------------------------------------- autopilot
 PERMANENT = ("kill switch", "daily loss", "available cash", "max ", "already holding", "geoblock", "cash balance")
 # With --forever only these end the autopilot: out of money, kill switch, or a blocked location.
-FINAL = ("kill switch", "available cash", "geoblock")
+FINAL = ("kill switch", "available cash", "geoblock check did not pass")
 
 
 def _brief_line(b) -> str:
@@ -506,6 +511,8 @@ def _auto_round(s: Settings, broker: Broker, w, a) -> str:
     last_log = 0.0
     market, cash = None, None
     while True:
+        if STOP.is_set():
+            return "stop:stopped by user"
         left = w.seconds_left(time.time())
         if left <= s.risk.min_seconds_left:
             _p(f"{w.slug}: no entry this round (no edge inside the zone).")
@@ -568,13 +575,7 @@ def _auto_round(s: Settings, broker: Broker, w, a) -> str:
             if hard and "already holding" in hard:
                 # A restart mid-window lands here holding a position: manage it, don't abandon it.
                 _p("already holding this window's position: managing it to the close")
-                while w.seconds_left(time.time()) > 1:
-                    try:
-                        if not _manage_once(s, auto_sell=not a.hold, stop_bid=a.stop_bid, stop_pct=a.stop_pct):
-                            break
-                    except FeedError as e:
-                        _p(f"feed error while managing, holding: {e!s:.100}")
-                    time.sleep(1.0)
+                _manage_until_close(s, w, a)
                 return "traded"
             if hard:
                 return "stop:" + hard
@@ -594,6 +595,12 @@ def _auto_round(s: Settings, broker: Broker, w, a) -> str:
         fill = broker.buy(b.market, side, stake, d.max_price, asks, q.fee_per_share,
                           meta={"fair": round(q.fair, 4), "edge": round(q.edge, 4), "secs_left": round(b.seconds_left, 1),
                                 "source": b.source})
+        if not fill.ok and fill.order_id:
+            # The exchange took the order but the fill could not be confirmed (settlement
+            # failed or shares not seen yet). Retrying could buy twice: sit this window out.
+            _p(f"[{fill.mode.upper()}] order {fill.order_id} accepted but not confirmed: {fill.detail} - "
+               "not retrying this window; check `pm status` / the Polymarket UI")
+            return "skipped"
         if not fill.ok:
             ms = (time.time() - b.fetched_at) * 1000
             _p(f"[{fill.mode.upper()}] not filled ({ms:.0f}ms after the book was read): {fill.detail} - retrying on next scan")
@@ -601,14 +608,21 @@ def _auto_round(s: Settings, broker: Broker, w, a) -> str:
             continue
         _p(f"[{fill.mode.upper()}] BOUGHT {fill.shares:.3f} {side} @ {fill.avg_price:.3f} for ${fill.usd:.2f} "
            f"(fair {q.fair:.3f}); managing until the close")
-        while w.seconds_left(time.time()) > 1:
-            try:
-                if not _manage_once(s, auto_sell=not a.hold, stop_bid=a.stop_bid, stop_pct=a.stop_pct):
-                    break  # sold
-            except FeedError as e:
-                _p(f"feed error while managing, holding: {e!s:.100}")
-            time.sleep(1.0)
+        _manage_until_close(s, w, a)
         return "traded"
+
+
+def _manage_until_close(s: Settings, w, a) -> None:
+    """Check the held position every second until it is sold or the window closes. Any
+    error - a dead feed, an SDK or network exception, a refused sell - is logged and
+    retried next second: dropping out here would leave the position without its stop."""
+    while w.seconds_left(time.time()) > 1:
+        try:
+            if not _manage_once(s, auto_sell=not a.hold, stop_bid=a.stop_bid, stop_pct=a.stop_pct):
+                return  # sold, or nothing left to manage
+        except Exception as e:  # noqa: BLE001 - see docstring
+            _p(f"{time.strftime('%H:%M:%S')} error while managing, holding and retrying: {type(e).__name__}: {e!s:.120}")
+        time.sleep(1.0)
 
 
 def _relearn(s: Settings) -> Settings:
@@ -626,7 +640,49 @@ def _relearn(s: Settings) -> Settings:
     return s if cal == s.calibration else dataclasses.replace(s, calibration=cal)
 
 
+def _nap(seconds: float) -> None:
+    """Sleep, waking early once a stop is requested."""
+    end = time.time() + seconds
+    while not STOP.is_set() and time.time() < end:
+        time.sleep(min(1.0, end - time.time()))
+
+
+def _on_stop(_signum, _frame) -> None:
+    if STOP.is_set():
+        raise KeyboardInterrupt
+    STOP.set()
+    _p("stop requested: no new trades; an open position is managed until its window closes")
+
+
+def _prune_briefs(s: Settings) -> None:
+    """Saved scans pile up (~15k files a day); keep the last `keep_briefs_days`."""
+    if s.risk.keep_briefs_days <= 0:
+        return
+    cutoff = time.time() - s.risk.keep_briefs_days * 86400
+    d = s.data_dir / "briefs"
+    try:
+        for f in d.glob("*.json"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except OSError as e:
+        _p(f"brief cleanup failed: {e!s:.100}")
+
+
 def cmd_auto(s: Settings, a) -> int:
+    STOP.clear()
+    old = {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+            if hasattr(signal, name):
+                old[name] = signal.signal(getattr(signal, name), _on_stop)
+    try:
+        return _auto_loop(s, a)
+    finally:
+        for name, h in old.items():
+            signal.signal(getattr(signal, name), h)
+
+
+def _auto_loop(s: Settings, a) -> int:
     broker = Broker(s)
     broker.warm()
     cl = chainlink.feed(s, wait=10)
@@ -639,8 +695,11 @@ def cmd_auto(s: Settings, a) -> int:
     done = 0
     try:
         while a.rounds == 0 or done < a.rounds:
-            for n in settle_positions(s):
-                _p(n)
+            try:
+                for n in settle_positions(s):
+                    _p(n)
+            except Exception as e:  # noqa: BLE001 - settlement is retried every window
+                _p(f"settlement check failed, retrying next window: {e!s:.120}")
             try:
                 for n in broker.claim_all():
                     _p(n)
@@ -649,8 +708,18 @@ def cmd_auto(s: Settings, a) -> int:
             w = window_at(time.time())
             if w.seconds_left(time.time()) <= s.risk.min_seconds_left:
                 w = next_window(time.time())
-            result = _auto_round(s, broker, w, a)
+            try:
+                result = _auto_round(s, broker, w, a)
+            except Exception as e:  # noqa: BLE001 - one bad round must not end an unattended run
+                _p(f"{time.strftime('%H:%M:%S')} round {w.slug} failed: {type(e).__name__}: {e!s:.160} - "
+                   "continuing with the next window")
+                result = "error"
             done += 1
+            if STOP.is_set():
+                _p("autopilot stopped by user.")
+                break
+            if done % 12 == 0:
+                _prune_briefs(s)
             if a.learn_every and done % a.learn_every == 0 and not result.startswith("stop:"):
                 s = _relearn(s)
             if result.startswith("stop:"):
@@ -658,11 +727,11 @@ def cmd_auto(s: Settings, a) -> int:
                 if a.forever and not any(k in reason for k in FINAL):
                     # A daily limit resets at 00:00 UTC; wait it out instead of exiting.
                     _p(f"autopilot paused: {reason} - checking again next window")
-                    time.sleep(max(0.0, w.end - time.time()) + 1.0)
+                    _nap(max(0.0, w.end - time.time()) + 1.0)
                     continue
                 _p(f"autopilot stopping: {reason}")
                 break
-            time.sleep(max(0.0, w.end - time.time()) + 1.0)
+            _nap(max(0.0, w.end - time.time()) + 1.0)
     except KeyboardInterrupt:
         _p("autopilot stopped by user.")
     time.sleep(3)

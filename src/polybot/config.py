@@ -78,6 +78,7 @@ class Risk:
     # jumps within a minute and trailing realised vol cannot see it coming.
     blackout_et: str = "08:25-08:45,13:55-14:45"
     entry_zone_s: int = 150  # autopilot only looks for entries with <= this many seconds left
+    keep_briefs_days: float = 7.0  # autopilot deletes saved scans older than this (0 = keep all)
     # Settlement reading(s) of the close: average of the last N seconds (0 = snapshot).
     # Polymarket's changelog (Aug 14, 2026) and the rules' source (the 60s TWAP stream)
     # put the close at the 60s TWAP. Set PM_SETTLE_WINDOWS=60,300 to also demand edge
@@ -171,6 +172,7 @@ def load(env_file: Path | None = None) -> Settings:
         kelly_fraction=num("KELLY_FRACTION", base.kelly_fraction),
         max_bankroll_frac=num("MAX_BANKROLL_FRAC", base.max_bankroll_frac),
         entry_zone_s=int(num("ENTRY_ZONE_S", base.entry_zone_s)),
+        keep_briefs_days=num("KEEP_BRIEFS_DAYS", base.keep_briefs_days),
         blackout_et=get("BLACKOUT_ET", base.blackout_et),
         settle_windows=tuple(int(x) for x in get("SETTLE_WINDOWS").split(",") if x.strip()) or base.settle_windows,
         strike_twap_s=int(num("STRIKE_TWAP_S", base.strike_twap_s)),

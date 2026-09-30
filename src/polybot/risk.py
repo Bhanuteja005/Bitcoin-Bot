@@ -31,8 +31,10 @@ def check_entry(risk: Risk, s: EntryState, stake: float, max_price: float) -> li
         out.append("kill switch is ON (data/KILL exists)")
     if s.blackout:
         out.append(f"macro-release blackout {s.blackout} New York time: volatility can jump without warning")
-    if s.live and s.geoblock_ok is not True:
+    if s.live and s.geoblock_ok is False:
         out.append("geoblock check did not pass: Polymarket does not allow orders from this location")
+    elif s.live and s.geoblock_ok is None:
+        out.append("geoblock unavailable: could not reach Polymarket's location check, not trading blind")
     if stake <= 0:
         out.append("stake must be positive")
     if stake > risk.max_stake_usd + 1e-9:

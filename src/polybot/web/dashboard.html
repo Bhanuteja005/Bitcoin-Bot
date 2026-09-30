@@ -289,11 +289,14 @@ function render() {
   document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.view === view));
   $('modePill').textContent = d.mode === 'live' ? 'LIVE — real money' : 'PAPER';
   $('modePill').className = 'pill' + (d.mode === 'live' ? ' live' : '');
-  $('statusPill').className = 'pill' + (d.running ? ' on' : '');
-  $('statusText').textContent = d.running ? 'Running' + (d.started_at ? ' · since ' + tm(d.started_at) : '') : 'Stopped';
+  const stopping = d.running && d.stopping;
+  $('statusPill').className = 'pill' + (d.running && !stopping ? ' on' : '');
+  $('statusText').textContent = stopping ? 'Stopping · finishing the open trade'
+    : d.running ? 'Running' + (d.started_at ? ' · since ' + tm(d.started_at) : '') : 'Stopped';
   if (!busy) {
-    $('runBtn').textContent = d.running ? 'Stop bot' : 'Start bot';
+    $('runBtn').textContent = stopping ? 'Stopping…' : d.running ? 'Stop bot' : 'Start bot';
     $('runBtn').className = 'btn ' + (d.running ? 'stop' : 'start');
+    $('runBtn').disabled = stopping;
   }
   if (d.kill) showBanner('bad', 'Kill switch is ON (<code>KILL</code> file in the data folder): the bot exits as soon as it starts. Delete the file to trade again.');
   else if (d.last_exit) showBanner('warn', esc(d.last_exit) + '. Out of cash, kill switch or a blocked location are the usual reasons.');

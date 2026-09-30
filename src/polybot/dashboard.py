@@ -137,6 +137,8 @@ class Bot:
         self.started_at: float | None = None
         self.stopping = False
         self.last_exit: str | None = None
+        self.crashes = 0
+        self.crashed_at: float | None = None
         self.lock = threading.Lock()
         s.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -158,12 +160,38 @@ class Bot:
             code = self.proc.poll()
             if code is None:
                 return True
-            # Exited by itself (out of cash, kill switch, geoblock) or after Stop.
-            if not self.stopping:
-                self.last_exit = f"bot exited by itself (code {code}) - see the log for why"
+            if self.stopping:
+                pass  # Stop was pressed
+            elif code == 0:
+                # A deliberate exit: out of cash, kill switch or a blocked location.
+                self.last_exit = "bot stopped itself - out of cash, kill switch or a blocked location; see the log"
                 self.state_path.write_text("stopped")
+            else:
+                # A crash: the watchdog restarts it (state stays "running").
+                self.crashes += 1
+                self.crashed_at = time.time()
+                self.last_exit = f"bot crashed (exit code {code}, crash #{self.crashes}); restarting automatically"
             self.proc, self.stopping = None, False
             return False
+
+    def restart_delay(self) -> float:
+        return min(300.0, 10.0 * 2 ** min(self.crashes - 1, 5))
+
+    def watchdog(self) -> None:
+        """Restart a crashed bot while it is meant to run; forget old crashes after 30 min up."""
+        while True:
+            time.sleep(5)
+            try:
+                if self.running():
+                    if self.crashes and self.started_at and time.time() - self.started_at > 1800:
+                        self.crashes = 0
+                elif self.wanted() and self.crashed_at and time.time() - self.crashed_at >= self.restart_delay():
+                    self.crashed_at = None
+                    with open(self.log_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n[dashboard] restarting after crash #{self.crashes}\n")
+                    self.start()
+            except Exception as e:  # noqa: BLE001 - the watchdog must outlive any error
+                print(f"watchdog error: {e}", flush=True)
 
     def start(self) -> str:
         if self.running():
@@ -177,7 +205,7 @@ class Bot:
             self.proc = subprocess.Popen([sys.executable, "-u", "-m", "polybot.cli", *bot_args()],
                                          stdout=log, stderr=subprocess.STDOUT, **kw)
             log.close()
-            self.started_at, self.stopping, self.last_exit = time.time(), False, None
+            self.started_at, self.stopping, self.crashed_at = time.time(), False, None
             self.state_path.write_text("running")
         return "started"
 
@@ -191,8 +219,9 @@ class Bot:
             p.send_signal(signal.SIGINT if os.name != "nt" else signal.CTRL_BREAK_EVENT)
 
         def reap() -> None:
+            # The bot finishes managing an open position before exiting: up to one window.
             try:
-                p.wait(timeout=20)
+                p.wait(timeout=330)
             except subprocess.TimeoutExpired:
                 p.kill()
         threading.Thread(target=reap, daemon=True).start()
@@ -255,7 +284,8 @@ class App:
         r = self.s.risk
         return {
             "now": now, "mode": "live" if self.s.is_live else "paper", "view": mode,
-            "running": self.bot.running(), "started_at": self.bot.started_at, "last_exit": self.bot.last_exit,
+            "running": self.bot.running(), "stopping": self.bot.stopping, "started_at": self.bot.started_at,
+            "last_exit": self.bot.last_exit,
             "kill": self.s.kill_file.exists(), "cash": cash, "cash_error": cash_err,
             "config": {"min_entry": r.min_entry_price, "max_entry": r.max_entry_price, "stop_pct": r.stop_loss_pct,
                        "stake": r.max_stake_usd, "enter_at": 120, "daily_loss_limit": r.daily_loss_limit_usd,
@@ -342,6 +372,11 @@ def serve(s: Settings) -> int:
               "(set it to reach the page from Railway).", flush=True)
     if app.bot.wanted():
         print(f"bot was running before this restart: starting it again ({app.bot.start()})", flush=True)
+    threading.Thread(target=app.bot.watchdog, daemon=True).start()
+
+    def on_term(*_a) -> None:  # Railway sends SIGTERM on redeploy
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, on_term)
     srv = ThreadingHTTPServer((host, s.port), make_handler(app))
     print(f"dashboard on http://{host}:{s.port}  [{'LIVE' if s.is_live else 'PAPER'}]", flush=True)
     try:
@@ -350,7 +385,12 @@ def serve(s: Settings) -> int:
         pass
     finally:
         if app.bot.running():
+            p = app.bot.proc
             app.bot.stop()
             # A redeploy is not the user pressing Stop: keep it running after the restart.
             (s.data_dir / "bot.state").write_text("running")
+            try:
+                p.wait(timeout=20)  # between windows the bot exits at once
+            except Exception:  # noqa: BLE001
+                pass
     return 0
