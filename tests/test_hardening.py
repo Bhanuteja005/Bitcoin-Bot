@@ -163,3 +163,21 @@ def test_low_cash_while_claiming_pauses_instead_of_stopping(desk, capsys, monkey
     assert cli.main(["auto", "--rounds", "2", "--forever", "--fixed", "--usd", "1"]) == 0
     out = capsys.readouterr().out
     assert "autopilot paused: stake $1.00 exceeds available cash" in out and "autopilot stopping" not in out
+
+
+def test_healthcheck_needs_no_password_but_pages_do(tmp_path):
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    s = Settings(data_dir=tmp_path, dashboard_password="pw")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.make_handler(dashboard.App(s)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        def get(path):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=5)
+            c.request("GET", path)
+            return c.getresponse().status
+        assert get("/healthz") == 200
+        assert get("/") == 401 and get("/api/summary") == 401
+    finally:
+        srv.shutdown()

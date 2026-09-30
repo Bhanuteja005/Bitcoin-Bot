@@ -336,9 +336,12 @@ def make_handler(app: App):
             self._send(code, json.dumps(obj).encode(), "application/json")
 
         def do_GET(self) -> None:  # noqa: N802
+            u = urlparse(self.path)
+            if u.path == "/healthz":  # Railway's health check carries no password
+                self._send(200, b"ok", "text/plain")
+                return
             if not self._authed():
                 return
-            u = urlparse(self.path)
             q = parse_qs(u.query)
             if u.path == "/":
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -347,8 +350,6 @@ def make_handler(app: App):
                 self._json(app.summary("live" if mode == "live" else "paper"))
             elif u.path == "/api/log":
                 self._json({"lines": app.bot.log_tail(min(int(q.get("n", ["300"])[0]), 2000))})
-            elif u.path == "/healthz":
-                self._send(200, b"ok", "text/plain")
             else:
                 self._send(404, b"not found", "text/plain")
 
