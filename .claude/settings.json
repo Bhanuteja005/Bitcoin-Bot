@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run pm scan:*)",
+      "Bash(uv run pm status:*)",
+      "Bash(uv run pm pnl:*)",
+      "Bash(uv run pm manage:*)",
+      "Bash(uv run pm settle:*)",
+      "Bash(uv run pm doctor:*)",
+      "Bash(uv run pm orders:*)",
+      "Bash(uv run pm kill on:*)",
+      "Bash(uv run pm buy:*)",
+      "Bash(uv run pm sell:*)",
+      "Bash(uv run pm watch:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run pm auto:*)",
+      "Bash(uv run python scripts/sim_live.py:*)"
+    ]
+  }
+}

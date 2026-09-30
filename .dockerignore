@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.venv/
+.git/
+.claude/
+.pytest_cache/
+__pycache__/
+data/
+data-fav/
+data-sim/
+reports/
+tests/
