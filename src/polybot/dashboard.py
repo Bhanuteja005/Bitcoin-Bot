@@ -197,6 +197,11 @@ class Bot:
         if self.running():
             return "already running"
         with self.lock:
+            try:
+                if self.log_path.stat().st_size > 20_000_000:  # keep one 20 MB backup
+                    self.log_path.replace(self.log_path.with_suffix(".log.1"))
+            except OSError:
+                pass
             log = open(self.log_path, "a", encoding="utf-8")
             log.write(f"\n===== started {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())} =====\n")
             log.flush()
@@ -265,13 +270,15 @@ class App:
     def __init__(self, s: Settings):
         self.s, self.bot = s, Bot(s)
         self._cash: tuple[float, float | None, str | None] = (0.0, None, None)
+        self._broker = None
 
     def cash(self) -> tuple[float | None, str | None]:
         at, val, err = self._cash
         if time.time() - at > 30:
             from .broker import Broker
             try:
-                val, err = Broker(self.s).cash(), None
+                self._broker = self._broker or Broker(self.s)  # one signing client, not one per read
+                val, err = self._broker.cash(), None
             except Exception as e:  # noqa: BLE001 - shown on the page, never fatal
                 val, err = None, str(e)[:120]
             self._cash = (time.time(), val, err)

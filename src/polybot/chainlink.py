@@ -21,6 +21,7 @@ from collections import deque
 from .config import Settings
 
 STALE_S = 5.0  # a Chainlink value older than this is not "now"
+SILENT_S = 30.0  # a subscription quiet this long has stalled: reconnect it
 BUFFER_S = 1200  # keep 20 minutes: covers the current window and the previous ones
 
 
@@ -114,7 +115,16 @@ class ChainlinkFeed:
         try:
             async def pump(spec, series: _Series) -> None:
                 async with await client.subscribe(spec) as h:
-                    async for ev in h:
+                    it = h.__aiter__()
+                    while True:
+                        # A stream can go quiet without an error; waiting on it forever
+                        # would leave the bot on the Binance fallback until a restart.
+                        try:
+                            ev = await asyncio.wait_for(it.__anext__(), SILENT_S)
+                        except StopAsyncIteration:
+                            return
+                        except asyncio.TimeoutError:
+                            raise ConnectionError(f"no {spec.__class__.__name__} update for {SILENT_S:.0f}s") from None
                         if self._stop.is_set():
                             return
                         p = ev.payload
